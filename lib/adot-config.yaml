@@ -1,0 +1,75 @@
+extensions:
+  ecs_observer:
+    cluster_name: "my-ecs-cluster"
+    cluster_region: "us-west-2"
+    result_file: "/etc/ecs_sd_targets.yaml"
+    refresh_interval: 60s
+    job_label_name: prometheus_job
+    services:
+      - name_pattern: "^.*gpu-service$"
+        metrics_ports:
+          - 9400
+        job_name: gpu-prometheus-exporter
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "ecssd"
+          file_sd_configs:
+            - files:
+                - "/etc/ecs_sd_targets.yaml"
+          relabel_configs:
+            - source_labels: [__meta_ecs_cluster_name]
+              action: replace
+              target_label: ClusterName
+            - source_labels: [__meta_ecs_service_name]
+              action: replace
+              target_label: ServiceName
+            - source_labels: [__meta_ecs_task_definition_family]
+              action: replace
+              target_label: TaskDefinitionFamily
+            - source_labels: [__meta_ecs_task_launch_type]
+              action: replace
+              target_label: LaunchType
+            - source_labels: [__meta_ecs_container_name]
+              action: replace
+              target_label: container_name
+            - action: labelmap
+              regex: ^__meta_ecs_container_labels_(.+)$
+              replacement: "$$1"
+processors:
+  resource:
+    attributes:
+      - key: receiver
+        value: "prometheus"
+        action: insert
+  metricstransform:
+    transforms:
+      - include: ".*"
+        match_type: regexp
+        action: update
+        operations:
+          - label: prometheus_job
+            new_label: job
+            action: update_label
+
+exporters:
+  awsemf:
+    namespace: ECS/ContainerInsights/Prometheus
+    log_group_name: "/aws/ecs/containerinsights/my-ecs-cluster/prometheus"
+    dimension_rollup_option: NoDimensionRollup
+    metric_declarations:
+      - dimensions: [[ClusterName, TaskDefinitionFamily, ServiceName]]
+        label_matchers:
+          - label_names:
+              - ServiceName
+            regex: "^.*gpu-service$"
+        metric_name_selectors:
+          - "^gpu_.*$"
+service:
+  extensions: [ecs_observer]
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [resource, metricstransform]
+      exporters: [awsemf]
